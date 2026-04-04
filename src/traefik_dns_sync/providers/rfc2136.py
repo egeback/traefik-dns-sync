@@ -65,6 +65,14 @@ class Rfc2136Provider:
     def _send(self, update: dns.update.Update) -> dns.message.Message:
         return dns.query.tcp(update, self._server, port=self._port, timeout=10)
 
+    def _check_response(self, response: dns.message.Message, label: str) -> None:
+        rcode = response.rcode()
+        if rcode != dns.rcode.NOERROR:
+            raise RuntimeError(
+                f"DNS UPDATE failed for {label}: "
+                f"rcode={dns.rcode.to_text(rcode)}"
+            )
+
     def _fqdn_dot(self, fqdn: str) -> str:
         """Ensure FQDN ends with a dot for DNS wire format."""
         if not fqdn.endswith("."):
@@ -101,10 +109,7 @@ class Rfc2136Provider:
         fqdn = self._fqdn_dot(record.fqdn)
         update.add(fqdn, 300, dns.rdatatype.A, record.ip)
 
-        response = self._send(update)
-        rcode = response.rcode()
-        if rcode != dns.rcode.NOERROR:
-            raise RuntimeError(f"DNS UPDATE failed for {record.fqdn}: rcode={dns.rcode.to_text(rcode)}")
+        self._check_response(self._send(update), record.fqdn)
 
         logger.info("Created RFC2136 A record: %s -> %s", record.fqdn, record.ip)
         return None  # No provider-specific ID for DNS
@@ -115,10 +120,7 @@ class Rfc2136Provider:
         fqdn = self._fqdn_dot(record.fqdn)
         update.replace(fqdn, 300, dns.rdatatype.A, record.ip)
 
-        response = self._send(update)
-        rcode = response.rcode()
-        if rcode != dns.rcode.NOERROR:
-            raise RuntimeError(f"DNS UPDATE failed for {record.fqdn}: rcode={dns.rcode.to_text(rcode)}")
+        self._check_response(self._send(update), record.fqdn)
 
         logger.info("Updated RFC2136 A record: %s -> %s", record.fqdn, record.ip)
 
@@ -128,10 +130,7 @@ class Rfc2136Provider:
         fqdn = self._fqdn_dot(record.fqdn)
         update.delete(fqdn, dns.rdatatype.A, record.ip)
 
-        response = self._send(update)
-        rcode = response.rcode()
-        if rcode != dns.rcode.NOERROR:
-            raise RuntimeError(f"DNS UPDATE failed for {record.fqdn}: rcode={dns.rcode.to_text(rcode)}")
+        self._check_response(self._send(update), record.fqdn)
 
         logger.info("Deleted RFC2136 A record: %s", record.fqdn)
 
@@ -141,10 +140,7 @@ class Rfc2136Provider:
         fqdn = self._fqdn_dot(record.fqdn)
         update.add(fqdn, 300, dns.rdatatype.TXT, record.value)
 
-        response = self._send(update)
-        rcode = response.rcode()
-        if rcode != dns.rcode.NOERROR:
-            raise RuntimeError(f"DNS UPDATE failed for TXT {record.fqdn}: rcode={dns.rcode.to_text(rcode)}")
+        self._check_response(self._send(update), f"TXT {record.fqdn}")
 
         logger.info("Created RFC2136 TXT record: %s", record.fqdn)
         return None
@@ -158,10 +154,7 @@ class Rfc2136Provider:
         # Delete all TXT records for this name
         update.delete(fqdn, dns.rdatatype.TXT)
 
-        response = self._send(update)
-        rcode = response.rcode()
-        if rcode != dns.rcode.NOERROR:
-            raise RuntimeError(f"DNS UPDATE failed for TXT {record.fqdn}: rcode={dns.rcode.to_text(rcode)}")
+        self._check_response(self._send(update), f"TXT {record.fqdn}")
 
         logger.info("Deleted RFC2136 TXT record: %s", record.fqdn)
 

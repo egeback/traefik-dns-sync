@@ -40,7 +40,9 @@ def build_providers(config: AppConfig) -> list:
         logger.info("UniFi provider enabled (%s)", config.unifi.host)
     if config.rfc2136.enabled:
         providers.append(Rfc2136Provider(config.rfc2136))
-        logger.info("RFC2136 provider enabled (%s zone %s)", config.rfc2136.host, config.rfc2136.zone)
+        logger.info(
+            "RFC2136 provider enabled (%s zone %s)", config.rfc2136.host, config.rfc2136.zone,
+        )
 
     if not providers:
         logger.error("No providers enabled — set OPNSENSE_ENABLED=true and/or UNIFI_ENABLED=true")
@@ -106,7 +108,10 @@ async def run_loop(engine: SyncEngine, config: AppConfig, health: HealthState) -
         )
         watcher.start()
 
-    logger.info("Starting sync loop (interval: %ds, docker events: %s)", interval, config.traefik.use_docker)
+    logger.info(
+        "Starting sync loop (interval: %ds, docker events: %s)",
+        interval, config.traefik.use_docker,
+    )
 
     while not stop.is_set():
         sync_trigger.clear()
