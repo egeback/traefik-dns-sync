@@ -8,14 +8,15 @@ Like [external-dns](https://github.com/kubernetes-sigs/external-dns) but for Doc
 
 | Provider | Status | TXT Ownership | API |
 |----------|--------|---------------|-----|
-| **OPNsense Unbound** | Stable | Via description field* | Host Override API |
+| **OPNsense Unbound** | Stable | Yes (native TXT >= 25.7, description fallback) | Host Override API |
 | **UniFi Gateway** | Stable | Yes (native TXT records) | Static DNS API |
 | **RFC 2136** | Stable | Yes (native TXT records) | Dynamic DNS Update (TSIG) |
 
-> \* OPNsense Unbound does not support TXT records. As a workaround, ownership
-> is stored in the host override `description` field. This provides the same
-> stateless recovery and ownership tracking, but the data is not visible as
-> actual DNS TXT records.
+> \* On OPNsense >= 25.7, native TXT records are created via the host override
+> API (`rr=TXT`, `txtdata` field). On older versions, ownership is stored in
+> the A-record's `description` field as a fallback. Detection is automatic —
+> native TXT is attempted first, and if it fails the provider falls back to
+> description-based tracking.
 
 ## Features
 
@@ -87,7 +88,7 @@ All configuration is via environment variables.
 
 ### OPNsense Provider
 
-OPNsense Unbound does not support TXT records natively. Ownership is stored in the host override `description` field instead, providing the same stateless recovery as native TXT records on other providers.
+On OPNsense >= 25.7, native TXT records are supported via the host override API. On older versions, ownership is stored in the A-record `description` field as a fallback. Detection is automatic.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
