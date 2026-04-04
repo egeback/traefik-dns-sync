@@ -67,6 +67,7 @@ class UnifiProvider:
             "key": record.fqdn,
             "record_type": "A",
             "value": record.ip,
+            "enabled": True,
         }
 
         async with self._client() as client:
@@ -93,6 +94,7 @@ class UnifiProvider:
             "key": record.fqdn,
             "record_type": "A",
             "value": record.ip,
+            "enabled": True,
         }
 
         async with self._client() as client:
