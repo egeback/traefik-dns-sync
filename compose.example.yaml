@@ -1,0 +1,57 @@
+services:
+  traefik-dns-sync:
+    image: ghcr.io/egeback/traefik-dns-sync:latest
+    container_name: traefik-dns-sync
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - data:/data  # Optional — state file cache, not required
+    ports:
+      - "8080:8080"  # Health endpoint
+    environment:
+      # Source — read labels from Docker socket (default)
+      TRAEFIK_USE_DOCKER: "true"
+
+      # IP address for A records — set to host IP
+      SYNC_HOST_IP: "192.168.1.10"
+
+      # Sync settings
+      SYNC_INTERVAL: "300"
+      SYNC_OWNER_ID: "docker-myhost"
+      SYNC_POLICY: "upsert-only"  # or "sync" to delete stale records
+      SYNC_DRY_RUN: "false"
+      SYNC_DOMAIN_FILTERS: '["internal.example.com", "example.com"]'
+
+      # TXT ownership records (like external-dns)
+      SYNC_TXT_PREFIX: "_tdns"  # default, set to "" to disable
+      SYNC_ADOPT_EXISTING: "false"  # set "true" to take over unmanaged records
+
+      # Health endpoint
+      SYNC_HEALTH_PORT: "8080"  # set to 0 to disable
+
+      # --- Providers (enable one or more) ---
+
+      # OPNsense Unbound provider (no TXT support)
+      OPNSENSE_ENABLED: "false"
+      OPNSENSE_HOST: "192.168.1.1"
+      OPNSENSE_API_KEY: "${OPNSENSE_API_KEY}"
+      OPNSENSE_API_SECRET: "${OPNSENSE_API_SECRET}"
+      OPNSENSE_SKIP_TLS_VERIFY: "true"
+
+      # UniFi Gateway provider (full TXT support)
+      UNIFI_ENABLED: "false"
+      UNIFI_HOST: "192.168.1.2"
+      UNIFI_API_KEY: "${UNIFI_API_KEY}"
+      UNIFI_SKIP_TLS_VERIFY: "true"
+
+      # RFC 2136 Dynamic DNS Update provider (full TXT support)
+      RFC2136_ENABLED: "false"
+      RFC2136_HOST: "192.168.1.1"
+      RFC2136_PORT: "53"
+      RFC2136_ZONE: "internal.example.com"
+      RFC2136_TSIG_KEY_NAME: "traefik-dns-sync."
+      RFC2136_TSIG_KEY_SECRET: "${RFC2136_TSIG_KEY_SECRET}"  # base64
+      RFC2136_TSIG_KEY_ALGORITHM: "hmac-sha256"
+
+volumes:
+  data:

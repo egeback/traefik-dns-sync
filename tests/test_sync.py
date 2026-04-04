@@ -1,0 +1,353 @@
+"""Tests for sync engine."""
+
+from __future__ import annotations
+
+import tempfile
+from pathlib import Path
+from unittest.mock import patch
+
+import pytest
+
+from traefik_dns_sync.config import AppConfig
+from traefik_dns_sync.models import DnsRecord, TxtRecord
+from traefik_dns_sync.source import TraefikRoute
+from traefik_dns_sync.state import StateTracker
+from traefik_dns_sync.sync import SyncEngine
+
+
+class FakeProvider:
+    def __init__(self, name: str = "fake", supports_txt: bool = True):
+        self._name = name
+        self.supports_txt = supports_txt
+        self.created: list[DnsRecord] = []
+        self.updated: list[DnsRecord] = []
+        self.deleted: list[DnsRecord] = []
+        self.txt_created: list[TxtRecord] = []
+        self.txt_deleted: list[TxtRecord] = []
+        self.txt_records: list[TxtRecord] = []
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    async def get_records(self, domain_filter=None):
+        return []
+
+    async def create_record(self, record):
+        self.created.append(record)
+        return f"id-{record.fqdn}"
+
+    async def update_record(self, record, provider_id=None):
+        self.updated.append(record)
+
+    async def delete_record(self, record, provider_id=None):
+        self.deleted.append(record)
+
+    async def create_txt_record(self, record):
+        self.txt_created.append(record)
+        return f"txt-id-{record.fqdn}"
+
+    async def delete_txt_record(self, record, provider_id=None):
+        self.txt_deleted.append(record)
+
+    async def get_txt_records(self, prefix, domain_filter=None):
+        return self.txt_records
+
+
+def make_engine(provider: FakeProvider, tmpdir: str, **env_overrides) -> SyncEngine:
+    import os
+
+    env = {
+        "SYNC_HOST_IP": "192.168.1.10",
+        "SYNC_STATE_FILE": str(Path(tmpdir) / "state.json"),
+        "SYNC_DRY_RUN": "false",
+        "TRAEFIK_USE_DOCKER": "true",
+        **env_overrides,
+    }
+    with patch.dict(os.environ, env, clear=False):
+        config = AppConfig()
+    state = StateTracker(config.sync.state_file, config.sync.owner_id)
+    return SyncEngine(config=config, providers=[provider], state=state)
+
+
+@pytest.fixture
+def routes():
+    return [
+        TraefikRoute(
+            router_name="grafana",
+            hostnames=["grafana.internal.example.se", "grafana.internal.example.com"],
+        ),
+        TraefikRoute(
+            router_name="evcc",
+            hostnames=["evcc.internal.example.se"],
+        ),
+    ]
+
+
+class TestSyncEngine:
+    @pytest.mark.asyncio
+    async def test_creates_new_records(self, routes):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            provider = FakeProvider("opnsense", supports_txt=False)
+            engine = make_engine(provider, tmpdir)
+
+            with patch.object(engine, "_discover_routes_async", return_value=routes):
+                result = await engine.sync()
+
+            assert result.created == 3
+            assert result.unchanged == 0
+            fqdns = {r.fqdn for r in provider.created}
+            assert "grafana.internal.example.se" in fqdns
+            assert "grafana.internal.example.com" in fqdns
+            assert "evcc.internal.example.se" in fqdns
+
+    @pytest.mark.asyncio
+    async def test_unchanged_on_second_sync(self, routes):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            provider = FakeProvider("opnsense", supports_txt=False)
+            engine = make_engine(provider, tmpdir)
+
+            with patch.object(engine, "_discover_routes_async", return_value=routes):
+                await engine.sync()
+                provider.created.clear()
+                result = await engine.sync()
+
+            assert result.created == 0
+            assert result.unchanged == 3
+
+    @pytest.mark.asyncio
+    async def test_dry_run(self, routes):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            provider = FakeProvider("opnsense", supports_txt=False)
+            engine = make_engine(provider, tmpdir, SYNC_DRY_RUN="true")
+
+            with patch.object(engine, "_discover_routes_async", return_value=routes):
+                result = await engine.sync()
+
+            assert result.created == 3
+            assert len(provider.created) == 0  # nothing actually created
+
+    @pytest.mark.asyncio
+    async def test_filters_domains(self):
+        routes = [
+            TraefikRoute(router_name="ext", hostnames=["app.example.org"]),
+            TraefikRoute(router_name="int", hostnames=["app.internal.example.se"]),
+        ]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            provider = FakeProvider("opnsense", supports_txt=False)
+            engine = make_engine(
+                provider, tmpdir,
+                SYNC_DOMAIN_FILTERS='["internal.example.se", "internal.example.com"]',
+            )
+
+            with patch.object(engine, "_discover_routes_async", return_value=routes):
+                result = await engine.sync()
+
+            assert result.created == 1
+            assert provider.created[0].fqdn == "app.internal.example.se"
+
+    @pytest.mark.asyncio
+    async def test_deletes_stale_with_sync_policy(self, routes):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            provider = FakeProvider("opnsense", supports_txt=False)
+            engine = make_engine(provider, tmpdir, SYNC_POLICY="sync")
+
+            with patch.object(engine, "_discover_routes_async", return_value=routes):
+                await engine.sync()
+
+            # Remove evcc from routes
+            reduced = [r for r in routes if r.router_name != "evcc"]
+            with patch.object(engine, "_discover_routes_async", return_value=reduced):
+                result = await engine.sync()
+
+            assert result.deleted == 1
+            assert provider.deleted[0].fqdn == "evcc.internal.example.se"
+
+
+class TestSyncEngineTxt:
+    """Tests for TXT ownership record integration."""
+
+    @pytest.mark.asyncio
+    async def test_creates_txt_alongside_a_record(self, routes):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            provider = FakeProvider("unifi")
+            engine = make_engine(provider, tmpdir)
+
+            with patch.object(engine, "_discover_routes_async", return_value=routes):
+                result = await engine.sync()
+
+            assert result.created == 3
+            assert len(provider.txt_created) == 3
+            txt_fqdns = {t.fqdn for t in provider.txt_created}
+            assert "_tdns.a-grafana.internal.example.se" in txt_fqdns
+            assert "_tdns.a-grafana.internal.example.com" in txt_fqdns
+            assert "_tdns.a-evcc.internal.example.se" in txt_fqdns
+
+            # Verify TXT value format
+            for txt in provider.txt_created:
+                assert "heritage=traefik-dns-sync" in txt.value
+                assert "traefik-dns-sync/owner=traefik-dns-sync" in txt.value
+
+    @pytest.mark.asyncio
+    async def test_deletes_txt_alongside_a_record(self, routes):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            provider = FakeProvider("unifi")
+            engine = make_engine(provider, tmpdir, SYNC_POLICY="sync")
+
+            with patch.object(engine, "_discover_routes_async", return_value=routes):
+                await engine.sync()
+
+            reduced = [r for r in routes if r.router_name != "evcc"]
+            with patch.object(engine, "_discover_routes_async", return_value=reduced):
+                result = await engine.sync()
+
+            assert result.deleted == 1
+            assert len(provider.txt_deleted) == 1
+            assert provider.txt_deleted[0].fqdn == "_tdns.a-evcc.internal.example.se"
+
+    @pytest.mark.asyncio
+    async def test_no_txt_for_provider_without_support(self, routes):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            provider = FakeProvider("opnsense", supports_txt=False)
+            engine = make_engine(provider, tmpdir)
+
+            with patch.object(engine, "_discover_routes_async", return_value=routes):
+                result = await engine.sync()
+
+            assert result.created == 3
+            assert len(provider.txt_created) == 0
+
+    @pytest.mark.asyncio
+    async def test_dry_run_logs_txt_operations(self, routes):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            provider = FakeProvider("unifi")
+            engine = make_engine(provider, tmpdir, SYNC_DRY_RUN="true")
+
+            with patch.object(engine, "_discover_routes_async", return_value=routes):
+                result = await engine.sync()
+
+            assert result.created == 3
+            assert len(provider.created) == 0
+            assert len(provider.txt_created) == 0
+
+    @pytest.mark.asyncio
+    async def test_rebuilds_state_from_txt_on_startup(self):
+        """Simulate a fresh container with no state file but TXT records in DNS."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            provider = FakeProvider("unifi")
+            # Pre-populate TXT records as if they exist in DNS
+            provider.txt_records = [
+                TxtRecord(
+                    fqdn="_tdns.a-grafana.internal.example.se",
+                    value="heritage=traefik-dns-sync,traefik-dns-sync/owner=traefik-dns-sync",
+                ),
+            ]
+            # Simulate A record also existing
+            async def get_records_with_existing(domain_filter=None):
+                return [DnsRecord.from_fqdn("grafana.internal.example.se", "192.168.1.10")]
+
+            provider.get_records = get_records_with_existing
+
+            routes = [
+                TraefikRoute(
+                    router_name="grafana",
+                    hostnames=["grafana.internal.example.se"],
+                ),
+            ]
+
+            engine = make_engine(provider, tmpdir)
+
+            with patch.object(engine, "_discover_routes_async", return_value=routes):
+                result = await engine.sync()
+
+            # Should recognize the record as managed (from TXT) and not re-create it
+            assert result.unchanged == 1
+            assert result.created == 0
+
+    @pytest.mark.asyncio
+    async def test_skips_existing_record_without_ownership(self):
+        """Record exists in DNS but has no TXT — should not be touched."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            provider = FakeProvider("unifi")
+
+            # A record exists in provider but no TXT ownership
+            async def get_records_with_existing(domain_filter=None):
+                return [DnsRecord.from_fqdn("amp.internal.example.se", "192.168.1.10")]
+
+            provider.get_records = get_records_with_existing
+
+            routes = [
+                TraefikRoute(
+                    router_name="amp",
+                    hostnames=["amp.internal.example.se"],
+                ),
+            ]
+
+            engine = make_engine(provider, tmpdir)
+
+            with patch.object(engine, "_discover_routes_async", return_value=routes):
+                result = await engine.sync()
+
+            # Should skip — record exists but not ours
+            assert result.unchanged == 1
+            assert result.created == 0
+            assert len(provider.created) == 0
+            assert len(provider.txt_created) == 0
+
+    @pytest.mark.asyncio
+    async def test_adopts_existing_record_when_enabled(self):
+        """With SYNC_ADOPT_EXISTING=true, adopt record by adding TXT ownership."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            provider = FakeProvider("unifi")
+
+            async def get_records_with_existing(domain_filter=None):
+                return [DnsRecord.from_fqdn("amp.internal.example.se", "192.168.1.10")]
+
+            provider.get_records = get_records_with_existing
+
+            routes = [
+                TraefikRoute(
+                    router_name="amp",
+                    hostnames=["amp.internal.example.se"],
+                ),
+            ]
+
+            engine = make_engine(provider, tmpdir, SYNC_ADOPT_EXISTING="true")
+
+            with patch.object(engine, "_discover_routes_async", return_value=routes):
+                result = await engine.sync()
+
+            # Should adopt — create TXT but NOT re-create A record
+            assert result.created == 1
+            assert len(provider.created) == 0  # A record already exists
+            assert len(provider.txt_created) == 1
+            assert provider.txt_created[0].fqdn == "_tdns.a-amp.internal.example.se"
+
+    @pytest.mark.asyncio
+    async def test_adopt_dry_run(self):
+        """Dry-run with adopt should log but not create."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            provider = FakeProvider("unifi")
+
+            async def get_records_with_existing(domain_filter=None):
+                return [DnsRecord.from_fqdn("amp.internal.example.se", "192.168.1.10")]
+
+            provider.get_records = get_records_with_existing
+
+            routes = [
+                TraefikRoute(
+                    router_name="amp",
+                    hostnames=["amp.internal.example.se"],
+                ),
+            ]
+
+            engine = make_engine(
+                provider, tmpdir, SYNC_ADOPT_EXISTING="true", SYNC_DRY_RUN="true",
+            )
+
+            with patch.object(engine, "_discover_routes_async", return_value=routes):
+                result = await engine.sync()
+
+            assert result.created == 1
+            assert len(provider.created) == 0
+            assert len(provider.txt_created) == 0
