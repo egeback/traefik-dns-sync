@@ -33,7 +33,7 @@ def setup_logging() -> None:
 def build_providers(config: AppConfig) -> list:
     providers = []
     if config.opnsense.enabled:
-        providers.append(OpnsenseProvider(config.opnsense))
+        providers.append(OpnsenseProvider(config.opnsense, config.sync.owner_id))
         logger.info("OPNsense provider enabled (%s)", config.opnsense.host)
     if config.unifi.enabled:
         providers.append(UnifiProvider(config.unifi))
