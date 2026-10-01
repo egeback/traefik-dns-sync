@@ -20,6 +20,7 @@ class FakeProvider:
         self._name = name
         self.supports_txt = supports_txt
         self.created: list[DnsRecord] = []
+        self.records: list[DnsRecord] = []  # current state on the "provider"
         self.updated: list[DnsRecord] = []
         self.deleted: list[DnsRecord] = []
         self.txt_created: list[TxtRecord] = []
@@ -31,10 +32,12 @@ class FakeProvider:
         return self._name
 
     async def get_records(self, domain_filter=None):
-        return []
+        # Like a real provider: what was created (and not deleted) is listed
+        return list(self.records)
 
     async def create_record(self, record):
         self.created.append(record)
+        self.records.append(record)
         return f"id-{record.fqdn}"
 
     async def update_record(self, record, provider_id=None):
@@ -42,6 +45,7 @@ class FakeProvider:
 
     async def delete_record(self, record, provider_id=None):
         self.deleted.append(record)
+        self.records = [r for r in self.records if r.fqdn != record.fqdn]
 
     async def create_txt_record(self, record):
         self.txt_created.append(record)
@@ -365,6 +369,51 @@ class TestSyncEngineTxt:
 
             assert result.updated == 1
             assert [r.ip for r in provider.updated] == ["192.168.1.10"]
+
+    @pytest.mark.asyncio
+    async def test_missing_managed_record_is_recreated(self):
+        """A managed record deleted from the provider (e.g. by the instance that owned it before
+        the app moved) is recreated; TXT only if it is gone too."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            provider = FakeProvider("unifi")
+            routes = [TraefikRoute(router_name="amp", hostnames=["amp.internal.example.se"])]
+            engine = make_engine(provider, tmpdir)
+
+            with patch.object(engine, "_discover_routes_async", return_value=routes):
+                await engine.sync()  # creates A + TXT and manages them
+            assert len(provider.created) == 1
+
+            async def get_records_gone(domain_filter=None):
+                return []
+
+            provider.get_records = get_records_gone
+            with patch.object(engine, "_discover_routes_async", return_value=routes):
+                result = await engine.sync()
+
+            assert result.created == 1
+            assert len(provider.created) == 2
+            assert provider.created[-1].ip == "192.168.1.10"
+
+    @pytest.mark.asyncio
+    async def test_missing_record_not_recreated_when_fetch_fails(self):
+        """If listing the provider fails, nothing is assumed missing (no duplicate creates)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            provider = FakeProvider("unifi")
+            routes = [TraefikRoute(router_name="amp", hostnames=["amp.internal.example.se"])]
+            engine = make_engine(provider, tmpdir)
+
+            with patch.object(engine, "_discover_routes_async", return_value=routes):
+                await engine.sync()
+
+            async def get_records_fail(domain_filter=None):
+                raise RuntimeError("gateway down")
+
+            provider.get_records = get_records_fail
+            with patch.object(engine, "_discover_routes_async", return_value=routes):
+                result = await engine.sync()
+
+            assert len(provider.created) == 1
+            assert result.created == 0
 
     @pytest.mark.asyncio
     async def test_duplicate_records_are_reconciled(self):

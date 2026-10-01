@@ -146,11 +146,24 @@ class SyncEngine:
         logger.info("Syncing %d records to %s", len(desired), provider_name)
 
         # Fetch existing records from provider to detect conflicts
+        fetched = True
         try:
             existing = await provider.get_records(self._config.sync.domain_filters or None)
         except Exception:
             logger.exception("Failed to fetch existing records from %s", provider_name)
             existing = []
+            fetched = False
+        # Existing TXT ownership records, so a recreated A record does not get a duplicate TXT
+        existing_txt: set[str] | None = None
+        if supports_txt and fetched:
+            try:
+                existing_txt = {
+                    t.fqdn for t in await provider.get_txt_records(
+                        prefix, self._config.sync.domain_filters or None,
+                    )
+                }
+            except Exception:
+                logger.exception("Failed to fetch TXT records from %s", provider_name)
         existing_fqdns = {r.fqdn for r in existing}
         # Actual IPs on the provider (a name can have several A records), to catch adopted
         # records pointing elsewhere, manual drift and duplicates
@@ -257,6 +270,30 @@ class SyncEngine:
                 self._state.add(record, provider_name, provider_id, txt_provider_id)
                 result.created += 1
 
+            elif fetched and record.fqdn not in existing_fqdns:
+                # Managed by us but gone from the provider (e.g. deleted by another instance that
+                # owned it before the app moved here, or by hand) — recreate it.
+                if self._config.sync.dry_run:
+                    logger.info(
+                        "[DRY RUN] Would recreate missing %s -> %s on %s",
+                        record.fqdn, record.ip, provider_name,
+                    )
+                    result.created += 1
+                    continue
+                try:
+                    provider_id = await provider.create_record(record)
+                    txt_provider_id = managed.txt_provider_id
+                    txt_fqdn = TxtRecord.make_fqdn(record.fqdn, prefix)
+                    if supports_txt and existing_txt is not None and txt_fqdn not in existing_txt:
+                        txt_provider_id = await provider.create_txt_record(
+                            TxtRecord(fqdn=txt_fqdn, value=TxtRecord.make_value(owner_id)),
+                        )
+                    self._state.add(record, provider_name, provider_id, txt_provider_id)
+                    result.created += 1
+                    logger.info("Recreated missing %s on %s", record.fqdn, provider_name)
+                except Exception:
+                    logger.exception("Failed to recreate %s on %s", record.fqdn, provider_name)
+                    result.errors += 1
             elif managed.ip != record.ip or existing_ips.get(record.fqdn, {record.ip}) != {
                 record.ip
             }:
