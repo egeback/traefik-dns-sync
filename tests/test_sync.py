@@ -322,6 +322,49 @@ class TestSyncEngineTxt:
             assert len(provider.created) == 0  # A record already exists
             assert len(provider.txt_created) == 1
             assert provider.txt_created[0].fqdn == "_tdns.a-amp.internal.example.se"
+            assert len(provider.updated) == 0  # already points at this host
+
+    @pytest.mark.asyncio
+    async def test_adopt_updates_ip_when_record_points_elsewhere(self):
+        """An adopted record pointing at another host (app moved here) gets this host's IP."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            provider = FakeProvider("unifi")
+
+            async def get_records_elsewhere(domain_filter=None):
+                return [DnsRecord.from_fqdn("amp.internal.example.se", "192.168.1.99")]
+
+            provider.get_records = get_records_elsewhere
+            routes = [TraefikRoute(router_name="amp", hostnames=["amp.internal.example.se"])]
+            engine = make_engine(provider, tmpdir, SYNC_ADOPT_EXISTING="true")
+
+            with patch.object(engine, "_discover_routes_async", return_value=routes):
+                result = await engine.sync()
+
+            assert result.created == 1
+            assert len(provider.created) == 0
+            assert len(provider.txt_created) == 1
+            assert [r.ip for r in provider.updated] == ["192.168.1.10"]
+
+    @pytest.mark.asyncio
+    async def test_managed_record_drift_is_corrected(self):
+        """A managed record whose provider value drifted (e.g. adopted by v1.0.2) is fixed."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            provider = FakeProvider("unifi")
+            routes = [TraefikRoute(router_name="amp", hostnames=["amp.internal.example.se"])]
+            engine = make_engine(provider, tmpdir)
+
+            with patch.object(engine, "_discover_routes_async", return_value=routes):
+                await engine.sync()  # creates and manages the record
+
+            async def get_records_drifted(domain_filter=None):
+                return [DnsRecord.from_fqdn("amp.internal.example.se", "192.168.1.99")]
+
+            provider.get_records = get_records_drifted
+            with patch.object(engine, "_discover_routes_async", return_value=routes):
+                result = await engine.sync()
+
+            assert result.updated == 1
+            assert [r.ip for r in provider.updated] == ["192.168.1.10"]
 
     @pytest.mark.asyncio
     async def test_adopt_dry_run(self):

@@ -148,10 +148,12 @@ class SyncEngine:
         # Fetch existing records from provider to detect conflicts
         try:
             existing = await provider.get_records(self._config.sync.domain_filters or None)
-            existing_fqdns = {r.fqdn for r in existing}
         except Exception:
             logger.exception("Failed to fetch existing records from %s", provider_name)
-            existing_fqdns = set()
+            existing = []
+        existing_fqdns = {r.fqdn for r in existing}
+        # Actual IP on the provider, to catch adopted records pointing elsewhere and manual drift
+        existing_ips = {r.fqdn: r.ip for r in existing}
 
         for record in desired:
             managed = self._state.get_managed(record, provider_name)
@@ -191,6 +193,14 @@ class SyncEngine:
                                 value=TxtRecord.make_value(owner_id),
                             )
                             txt_provider_id = await provider.create_txt_record(txt)
+                        # The adopted record may point at another host (e.g. the app moved here)
+                        if existing_ips.get(record.fqdn, record.ip) != record.ip:
+                            await provider.update_record(record, None)
+                            logger.info(
+                                "Adopted %s on %s: %s -> %s",
+                                record.fqdn, provider_name,
+                                existing_ips[record.fqdn], record.ip,
+                            )
                         self._state.add(record, provider_name, None, txt_provider_id)
                         result.created += 1
                         logger.info(
@@ -243,12 +253,13 @@ class SyncEngine:
                 self._state.add(record, provider_name, provider_id, txt_provider_id)
                 result.created += 1
 
-            elif managed.ip != record.ip:
-                # IP changed — update it
+            elif managed.ip != record.ip or existing_ips.get(record.fqdn, record.ip) != record.ip:
+                # IP changed here, or the record on the provider drifted from what we manage
+                current_ip = existing_ips.get(record.fqdn, managed.ip)
                 if self._config.sync.dry_run:
                     logger.info(
                         "[DRY RUN] Would update %s: %s -> %s on %s",
-                        record.fqdn, managed.ip, record.ip, provider_name,
+                        record.fqdn, current_ip, record.ip, provider_name,
                     )
                     result.updated += 1
                     continue
