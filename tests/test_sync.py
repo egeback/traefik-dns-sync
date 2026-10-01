@@ -367,6 +367,29 @@ class TestSyncEngineTxt:
             assert [r.ip for r in provider.updated] == ["192.168.1.10"]
 
     @pytest.mark.asyncio
+    async def test_duplicate_records_are_reconciled(self):
+        """A managed name with an extra A record pointing elsewhere is treated as drift."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            provider = FakeProvider("unifi")
+            routes = [TraefikRoute(router_name="amp", hostnames=["amp.internal.example.se"])]
+            engine = make_engine(provider, tmpdir)
+
+            with patch.object(engine, "_discover_routes_async", return_value=routes):
+                await engine.sync()
+
+            async def get_records_duplicated(domain_filter=None):
+                return [
+                    DnsRecord.from_fqdn("amp.internal.example.se", "192.168.1.99"),
+                    DnsRecord.from_fqdn("amp.internal.example.se", "192.168.1.10"),
+                ]
+
+            provider.get_records = get_records_duplicated
+            with patch.object(engine, "_discover_routes_async", return_value=routes):
+                result = await engine.sync()
+
+            assert result.updated == 1
+
+    @pytest.mark.asyncio
     async def test_adopt_dry_run(self):
         """Dry-run with adopt should log but not create."""
         with tempfile.TemporaryDirectory() as tmpdir:

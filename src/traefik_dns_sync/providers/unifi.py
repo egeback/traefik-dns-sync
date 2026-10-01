@@ -83,14 +83,22 @@ class UnifiProvider:
             return record_id
 
     async def update_record(self, record: DnsRecord, provider_id: str | None = None) -> None:
-        """Update an existing static DNS record."""
-        if not provider_id:
-            provider_id = await self._find_record_id(record.fqdn)
-            if not provider_id:
-                logger.warning("Cannot update — record not found: %s", record.fqdn)
-                return
+        """Update an existing static DNS record, removing duplicate A records for the name.
+
+        UniFi's PUT creates a NEW record unless the body carries ``_id``, so the id is
+        always sent. Duplicates (e.g. left by that behaviour in <= 1.0.3) are deleted.
+        """
+        ids = await self._find_record_ids(record.fqdn)
+        if provider_id and provider_id in ids:
+            target = provider_id
+        elif ids:
+            target = ids[0]
+        else:
+            logger.warning("Cannot update — record not found: %s", record.fqdn)
+            return
 
         payload = {
+            "_id": target,
             "key": record.fqdn,
             "record_type": "A",
             "value": record.ip,
@@ -98,12 +106,14 @@ class UnifiProvider:
         }
 
         async with self._client() as client:
-            resp = await client.put(
-                f"{self._dns_path()}/{provider_id}",
-                json=payload,
-            )
+            resp = await client.put(f"{self._dns_path()}/{target}", json=payload)
             resp.raise_for_status()
             logger.info("Updated UniFi record: %s -> %s", record.fqdn, record.ip)
+
+            for duplicate in (i for i in ids if i != target):
+                resp = await client.delete(f"{self._dns_path()}/{duplicate}")
+                resp.raise_for_status()
+                logger.info("Deleted duplicate UniFi record: %s (id: %s)", record.fqdn, duplicate)
 
     async def delete_record(self, record: DnsRecord, provider_id: str | None = None) -> None:
         """Delete a static DNS record."""
@@ -185,16 +195,22 @@ class UnifiProvider:
 
         return records
 
-    async def _find_record_id(
-        self, fqdn: str, record_type: str = "A",
-    ) -> str | None:
-        """Find the UniFi record ID for a given FQDN and type."""
+    async def _find_record_ids(self, fqdn: str, record_type: str = "A") -> list[str]:
+        """All UniFi record IDs for a given FQDN and type (UniFi allows duplicates)."""
         async with self._client() as client:
             resp = await client.get(self._dns_path())
             resp.raise_for_status()
             data = resp.json()
 
-        for entry in data:
-            if entry.get("key") == fqdn and entry.get("record_type", "A") == record_type:
-                return entry.get("_id")
-        return None
+        return [
+            entry["_id"] for entry in data
+            if entry.get("key") == fqdn and entry.get("record_type", "A") == record_type
+            and entry.get("_id")
+        ]
+
+    async def _find_record_id(
+        self, fqdn: str, record_type: str = "A",
+    ) -> str | None:
+        """Find the UniFi record ID for a given FQDN and type."""
+        ids = await self._find_record_ids(fqdn, record_type)
+        return ids[0] if ids else None
