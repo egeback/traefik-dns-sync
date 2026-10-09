@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 
 from traefik_dns_sync.config import AppConfig
 from traefik_dns_sync.models import DnsRecord, TxtRecord
@@ -26,6 +27,9 @@ class SyncEngine:
         self._providers = providers
         self._state = state
         self._initialized = False
+        # (provider, fqdn) -> monotonic time the managed record was first seen without a route.
+        # Kept in memory on purpose: after a restart the grace period starts over.
+        self._missing_since: dict[tuple[str, str], float] = {}
 
     def _discover_routes(self) -> list[TraefikRoute]:
         """Discover Traefik routes from configured source."""
@@ -320,7 +324,7 @@ class SyncEngine:
         # Handle stale records (only if policy is "sync")
         if self._config.sync.policy == "sync":
             stale = self._state.get_stale(current_fqdns, provider_name)
-            for managed in stale:
+            for managed in self._past_grace(stale, current_fqdns, provider_name):
                 if self._config.sync.dry_run:
                     logger.info(
                         "[DRY RUN] Would delete stale %s from %s",
@@ -347,6 +351,7 @@ class SyncEngine:
                         await provider.delete_txt_record(txt, managed.txt_provider_id)
 
                     self._state.remove(stale_record, provider_name)
+                    self._missing_since.pop((provider_name, managed.fqdn), None)
                     result.deleted += 1
                 except Exception:
                     logger.exception(
@@ -354,6 +359,31 @@ class SyncEngine:
                         managed.fqdn, provider_name,
                     )
                     result.errors += 1
+
+    def _past_grace(self, stale: list, current_fqdns: set[str], provider_name: str) -> list:
+        """Return the stale records that have been missing longer than SYNC_DELETE_GRACE."""
+        # Routes that came back reset their clock
+        back = [k for k in self._missing_since if k[0] == provider_name and k[1] in current_fqdns]
+        for key in back:
+            del self._missing_since[key]
+
+        grace = self._config.sync.delete_grace
+        if grace <= 0:
+            return stale
+
+        now = time.monotonic()
+        due = []
+        for managed in stale:
+            since = self._missing_since.setdefault((provider_name, managed.fqdn), now)
+            missing_for = now - since
+            if missing_for >= grace:
+                due.append(managed)
+            else:
+                logger.info(
+                    "Keeping %s on %s — missing for %ds, deleting after %ds (SYNC_DELETE_GRACE)",
+                    managed.fqdn, provider_name, missing_for, grace,
+                )
+        return due
 
 
 class SyncResult:

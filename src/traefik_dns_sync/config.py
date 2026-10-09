@@ -96,6 +96,14 @@ class SyncConfig(BaseSettings):
         default="_tdns",
         description="Prefix for TXT ownership records (like _edns in external-dns)",
     )
+    delete_grace: int = Field(
+        default=0,
+        description=(
+            "Seconds a managed record must be missing from Traefik before the sync policy deletes"
+            " it (0 = delete at once). Also applies after startup, so a sync that runs before the"
+            " other containers are up does not wipe their records."
+        ),
+    )
     adopt_existing: bool = Field(
         default=False,
         description="Adopt existing DNS records by adding TXT ownership (default: skip them)",

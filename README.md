@@ -76,6 +76,7 @@ All configuration is via environment variables.
 | `SYNC_DOMAIN_FILTERS` | `[]` | JSON list of allowed domains |
 | `SYNC_TXT_PREFIX` | `_tdns` | Prefix for TXT ownership records |
 | `SYNC_ADOPT_EXISTING` | `false` | Take over unmanaged records by adding TXT ownership |
+| `SYNC_DELETE_GRACE` | `0` | With `sync`: seconds a record must be missing from Traefik before it is deleted (0 = at once) |
 | `SYNC_HEALTH_PORT` | `8080` | Port for health endpoint (0 to disable) |
 
 ### Traefik Source
@@ -143,6 +144,8 @@ This means:
 
 - **`upsert-only`** (default): Creates new records and updates existing ones. Never deletes. Safe for getting started.
 - **`sync`**: Full reconciliation — also deletes DNS records that no longer have a matching Traefik route. Only deletes records with matching TXT ownership.
+
+  Set `SYNC_DELETE_GRACE` (e.g. `600`) to delete a record only after its route has been gone that long. The clock starts when the record is first seen missing and restarts with the process, so a sync that runs right after startup — before the other containers (and their Traefik labels) are up — does not wipe their DNS records. A route that comes back resets the clock.
 
 ## Health Endpoint
 
