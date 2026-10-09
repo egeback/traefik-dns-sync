@@ -168,6 +168,105 @@ class TestSyncEngine:
             assert provider.deleted[0].fqdn == "evcc.internal.example.se"
 
 
+class TestDeleteGrace:
+    """SYNC_DELETE_GRACE: stale records are kept until they have been missing long enough."""
+
+    @pytest.mark.asyncio
+    async def test_stale_record_kept_within_grace(self, routes):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            provider = FakeProvider("unifi")
+            engine = make_engine(provider, tmpdir, SYNC_POLICY="sync", SYNC_DELETE_GRACE="600")
+            reduced = [r for r in routes if r.router_name != "evcc"]
+
+            with patch("traefik_dns_sync.sync.time.monotonic", return_value=1000.0):
+                with patch.object(engine, "_discover_routes_async", return_value=routes):
+                    await engine.sync()
+                with patch.object(engine, "_discover_routes_async", return_value=reduced):
+                    result = await engine.sync()
+
+            assert result.deleted == 0
+            assert provider.deleted == []
+            assert provider.txt_deleted == []
+
+    @pytest.mark.asyncio
+    async def test_stale_record_deleted_after_grace(self, routes):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            provider = FakeProvider("unifi")
+            engine = make_engine(provider, tmpdir, SYNC_POLICY="sync", SYNC_DELETE_GRACE="600")
+            reduced = [r for r in routes if r.router_name != "evcc"]
+
+            with patch.object(engine, "_discover_routes_async", return_value=routes):
+                await engine.sync()
+            with patch.object(engine, "_discover_routes_async", return_value=reduced):
+                with patch("traefik_dns_sync.sync.time.monotonic", return_value=1000.0):
+                    first = await engine.sync()
+                with patch("traefik_dns_sync.sync.time.monotonic", return_value=1599.0):
+                    almost = await engine.sync()
+                with patch("traefik_dns_sync.sync.time.monotonic", return_value=1600.0):
+                    due = await engine.sync()
+
+            assert first.deleted == 0
+            assert almost.deleted == 0
+            assert due.deleted == 1
+            assert provider.deleted[0].fqdn == "evcc.internal.example.se"
+            assert provider.txt_deleted[0].fqdn == "_tdns.a-evcc.internal.example.se"
+
+    @pytest.mark.asyncio
+    async def test_returning_route_resets_grace(self, routes):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            provider = FakeProvider("unifi")
+            engine = make_engine(provider, tmpdir, SYNC_POLICY="sync", SYNC_DELETE_GRACE="600")
+            reduced = [r for r in routes if r.router_name != "evcc"]
+
+            with patch.object(engine, "_discover_routes_async", return_value=routes):
+                await engine.sync()
+            with patch("traefik_dns_sync.sync.time.monotonic", return_value=1000.0):
+                with patch.object(engine, "_discover_routes_async", return_value=reduced):
+                    await engine.sync()
+            with patch("traefik_dns_sync.sync.time.monotonic", return_value=1300.0):
+                with patch.object(engine, "_discover_routes_async", return_value=routes):
+                    await engine.sync()
+            # Gone again: the clock starts over at 1400, so 1700 is still within grace
+            with patch.object(engine, "_discover_routes_async", return_value=reduced):
+                with patch("traefik_dns_sync.sync.time.monotonic", return_value=1400.0):
+                    await engine.sync()
+                with patch("traefik_dns_sync.sync.time.monotonic", return_value=1700.0):
+                    result = await engine.sync()
+
+            assert result.deleted == 0
+            assert provider.deleted == []
+
+    @pytest.mark.asyncio
+    async def test_startup_before_other_containers_keeps_records(self, routes):
+        """The handover case: a fresh process sees no routes yet and must not wipe DNS."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            provider = FakeProvider("unifi")
+            first = make_engine(provider, tmpdir, SYNC_POLICY="sync")
+            with patch.object(first, "_discover_routes_async", return_value=routes):
+                await first.sync()
+
+            # New process (state recovered from file/TXT), the other containers are not up yet
+            fresh = make_engine(provider, tmpdir, SYNC_POLICY="sync", SYNC_DELETE_GRACE="600")
+            with patch("traefik_dns_sync.sync.time.monotonic", return_value=50.0):
+                with patch.object(fresh, "_discover_routes_async", return_value=[]):
+                    result = await fresh.sync()
+
+            assert result.deleted == 0
+            assert len(provider.records) == 3
+
+    @pytest.mark.asyncio
+    async def test_zero_grace_keeps_old_behaviour(self, routes):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            provider = FakeProvider("unifi")
+            engine = make_engine(provider, tmpdir, SYNC_POLICY="sync", SYNC_DELETE_GRACE="0")
+            reduced = [r for r in routes if r.router_name != "evcc"]
+            with patch.object(engine, "_discover_routes_async", return_value=routes):
+                await engine.sync()
+            with patch.object(engine, "_discover_routes_async", return_value=reduced):
+                result = await engine.sync()
+            assert result.deleted == 1
+
+
 class TestSyncEngineTxt:
     """Tests for TXT ownership record integration."""
 
