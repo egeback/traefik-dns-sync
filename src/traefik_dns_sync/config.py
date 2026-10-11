@@ -21,6 +21,10 @@ class TraefikConfig(BaseSettings):
         default="unix:///var/run/docker.sock",
         description="Docker socket path",
     )
+    file_dir: str | None = Field(
+        default=None,
+        description="Traefik file provider directory — its routes are synced too",
+    )
 
 
 class OpnsenseConfig(BaseSettings):

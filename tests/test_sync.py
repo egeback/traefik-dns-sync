@@ -565,3 +565,32 @@ class TestSyncEngineTxt:
             assert result.created == 1
             assert len(provider.created) == 0
             assert len(provider.txt_created) == 0
+
+
+class TestFileProviderRoutes:
+    async def test_file_routes_added_to_docker_routes(self, routes):
+        provider = FakeProvider()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            file_dir = Path(tmpdir) / "config"
+            file_dir.mkdir()
+            (file_dir / "hb.yml").write_text(
+                "http:\n  routers:\n    hb:\n      rule: \"Host(`hb.internal.example.se`)\"\n"
+            )
+            engine = make_engine(provider, tmpdir, TRAEFIK_FILE_DIR=str(file_dir))
+            with patch.object(engine, "_discover_routes", return_value=list(routes)):
+                await engine.sync()
+        created = {r.fqdn for r in provider.created}
+        assert "hb.internal.example.se" in created
+        assert {h for r in routes for h in r.hostnames} <= created
+
+    async def test_missing_file_dir_fails_without_deleting(self, routes):
+        provider = FakeProvider()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            engine = make_engine(provider, tmpdir, SYNC_POLICY="sync")
+            with patch.object(engine, "_discover_routes", return_value=list(routes)):
+                await engine.sync()
+            engine._config.traefik.file_dir = str(Path(tmpdir) / "missing")
+            with patch.object(engine, "_discover_routes", return_value=[]):
+                with pytest.raises(FileNotFoundError):
+                    await engine.sync()
+        assert provider.deleted == []

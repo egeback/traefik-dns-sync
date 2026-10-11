@@ -86,6 +86,7 @@ All configuration is via environment variables.
 | `TRAEFIK_USE_DOCKER` | `true` | Read from Docker labels |
 | `TRAEFIK_URL` | *(none)* | Traefik API URL (alternative to Docker) |
 | `TRAEFIK_DOCKER_HOST` | `unix:///var/run/docker.sock` | Docker socket path |
+| `TRAEFIK_FILE_DIR` | *(none)* | Traefik file provider directory (YAML/TOML, mounted read-only). Its `http.routers` are synced in addition to Docker/API routes; a missing or unparseable file fails the cycle instead of deleting records |
 
 ### OPNsense Provider
 
