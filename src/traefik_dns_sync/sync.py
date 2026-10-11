@@ -8,7 +8,7 @@ import time
 from traefik_dns_sync.config import AppConfig
 from traefik_dns_sync.models import DnsRecord, TxtRecord
 from traefik_dns_sync.providers import DnsProvider
-from traefik_dns_sync.source import DockerSource, TraefikApiSource, TraefikRoute
+from traefik_dns_sync.source import DockerSource, FileSource, TraefikApiSource, TraefikRoute
 from traefik_dns_sync.state import StateTracker
 
 logger = logging.getLogger(__name__)
@@ -42,11 +42,15 @@ class SyncEngine:
             )
 
     async def _discover_routes_async(self) -> list[TraefikRoute]:
-        """Discover Traefik routes from Traefik API."""
+        """Discover Traefik routes from Traefik API or Docker, plus the file provider."""
         if not self._config.traefik.use_docker and self._config.traefik.url:
             source = TraefikApiSource(self._config.traefik)
-            return await source.discover()
-        return self._discover_routes()
+            routes = await source.discover()
+        else:
+            routes = self._discover_routes()
+        if self._config.traefik.file_dir:
+            routes.extend(FileSource(self._config.traefik).discover())
+        return routes
 
     def _routes_to_records(self, routes: list[TraefikRoute]) -> list[DnsRecord]:
         """Convert Traefik routes to DNS records, applying domain filters."""
