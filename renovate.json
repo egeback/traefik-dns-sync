@@ -1,0 +1,23 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "dependencyDashboard": true,
+  "dependencyDashboardHeader": "Merge bygger ingen image — publicera en release (vX.Y.Z) så bygger GitHub Actions ghcr.io/egeback/traefik-dns-sync, och Renovate i docker-infrastructure tar den vidare (ADR-0029).",
+  "timezone": "Europe/Stockholm",
+  "schedule": ["* 0-8 * * 1"],
+  "labels": ["dependencies"],
+  "assignees": ["egeback"],
+  "automerge": false,
+  "packageRules": [
+    {
+      "description": "Basimages — pinna digest så att säkerhetspatchar i samma tagg ger en PR (KAN-622)",
+      "matchManagers": ["dockerfile"],
+      "pinDigests": true
+    },
+    {
+      "description": "Digest och patch i en PR per vecka; minor/major får egen PR",
+      "matchUpdateTypes": ["digest", "pin", "pinDigest", "patch"],
+      "groupName": "digest och patch"
+    }
+  ]
+}
