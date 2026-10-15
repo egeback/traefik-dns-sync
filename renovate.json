@@ -4,7 +4,7 @@
   "dependencyDashboard": true,
   "dependencyDashboardHeader": "Merge bygger ingen image — publicera en release (vX.Y.Z) så bygger GitHub Actions ghcr.io/egeback/traefik-dns-sync, och Renovate i docker-infrastructure tar den vidare (ADR-0029).",
   "timezone": "Europe/Stockholm",
-  "schedule": ["* 0-8 * * 1"],
+  "schedule": ["* 0-8 1 * *"],
   "labels": ["dependencies"],
   "assignees": ["egeback"],
   "automerge": false,
@@ -15,9 +15,22 @@
       "pinDigests": true
     },
     {
-      "description": "Digest och patch i en PR per vecka; minor/major får egen PR",
+      "description": "Basimages: digest/patch/pin i en PR; minor/major får egen PR",
+      "matchManagers": ["dockerfile"],
       "matchUpdateTypes": ["digest", "pin", "pinDigest", "patch"],
-      "groupName": "digest och patch"
+      "groupName": "basimages"
+    },
+    {
+      "description": "GitHub Actions — påverkar bara CI, aldrig imagen: egen PR skild från basimages. Språkversionen i setup-python/setup-go följer Dockerfilens basimage.",
+      "matchManagers": ["github-actions"],
+      "matchDepNames": ["!python", "!go", "!node"],
+      "groupName": "CI-workflows"
+    },
+    {
+      "description": "Appens beroenden (go.mod, pyproject) — non-major i en PR; kräver en release för att nå drift",
+      "matchManagers": ["gomod", "pep621", "pip_requirements"],
+      "matchUpdateTypes": ["minor", "patch", "digest"],
+      "groupName": "app-beroenden"
     }
   ]
 }
